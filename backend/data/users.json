@@ -1,0 +1,29 @@
+[
+  {
+    "_id": "n6qcvdm7ux",
+    "name": "Yasin Dev",
+    "email": "yasindev216@gmail.com",
+    "passwordHash": "$2b$10$es1yNkmn4Pb7RxJjrEtwquBt2Kj0rP3W9VONkGokaYFF7Lg9KGi1a",
+    "role": "admin",
+    "createdAt": "2026-05-16T18:38:20.562Z",
+    "updatedAt": "2026-05-16T18:38:20.562Z"
+  },
+  {
+    "_id": "cgffksr1umh",
+    "name": "daha",
+    "email": "daha@gmail.com",
+    "passwordHash": "$2b$10$bPF4GY2ZaYvvxGSlhUoaz.HNGO5bwBu6Uj0Y9UF0Vx83qhPXAkiWi",
+    "role": "analyst",
+    "createdAt": "2026-05-16T20:00:39.646Z",
+    "updatedAt": "2026-05-16T20:00:39.646Z"
+  },
+  {
+    "_id": "356v4arkji2",
+    "name": "Yahye",
+    "email": "yahye@gmail.com",
+    "passwordHash": "$2b$10$Le6Kso/p6YBuPw/1erQgweUdf.JVvfhyfXixmk3HBuQCZdUU4kAsi",
+    "role": "police",
+    "createdAt": "2026-05-17T19:43:17.525Z",
+    "updatedAt": "2026-05-17T19:43:17.525Z"
+  }
+]

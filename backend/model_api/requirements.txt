@@ -1,0 +1,1 @@
+-r ../../ai-model/requirements.txt
