@@ -77,6 +77,18 @@ class JsonCollection {
     return this.clone(deleted);
   }
 
+  async updateById(id, updates) {
+    const items = await this.load();
+    const index = items.findIndex((entry) => entry._id === id);
+    if (index === -1) {
+      return null;
+    }
+
+    items[index] = { ...items[index], ...updates, updatedAt: new Date().toISOString() };
+    await this.persist();
+    return this.clone(items[index]);
+  }
+
   clone(value) {
     return JSON.parse(JSON.stringify(value));
   }

@@ -17,4 +17,5 @@ export {
   login,
   register,
   updateUserRole,
+  updateCrimeReport,
 } from '../api';

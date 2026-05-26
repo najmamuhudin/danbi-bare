@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { Loader2, ShieldPlus, UserPlus } from 'lucide-react';
+import { ArrowLeft, Loader2, UserPlus } from 'lucide-react';
+import { LogoMark } from '../components/Logo';
 import { getAuthRoles } from '../services';
 import { clearAuthError, registerUser } from '../redux/authSlice';
 import { ROLE_LABELS, ROLES } from '../utils/roles';
@@ -65,16 +66,23 @@ const Register = () => {
   };
 
   return (
-    <div className="max-w-lg mx-auto py-6 sm:py-10">
+    <div className="relative max-w-lg mx-auto py-12 sm:py-10">
       <div className="glass-panel p-5 sm:p-8">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="h-11 w-11 rounded-lg bg-primary/10 border border-primary/30 flex items-center justify-center text-primary">
-            <ShieldPlus className="w-6 h-6" />
+        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <LogoMark className="h-12 w-12 shrink-0" />
+            <div className="min-w-0">
+              <h1 className="text-2xl font-bold">Register</h1>
+              <p className="text-sm text-textMuted">Create a secure account to access analysis.</p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold">Register</h1>
-            <p className="text-sm text-textMuted">Create a secure account to access analysis.</p>
-          </div>
+          <Link
+            to="/"
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-textMuted transition-colors hover:border-primary/40 hover:text-text"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Back home</span>
+          </Link>
         </div>
 
         <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-4">

@@ -8,6 +8,9 @@ const CrimeReport = require('../models/CrimeReport');
 const Log = require('../models/Log');
 const { DASHBOARD_ROLES, ROLES } = require('../config/roles');
 const { authenticate, authorize } = require('../middleware/auth');
+const { dbHealth } = require('../config/database');
+const EmergencyAlerts = require('../services/emergencyAlerts');
+const Notifications = require('../services/notifications');
 
 const PYTHON_API = process.env.PYTHON_API_URL || 'http://localhost:5000';
 const PYTHON_API_TIMEOUT_MS = Number(process.env.PYTHON_API_TIMEOUT_MS || 120000);
@@ -280,12 +283,27 @@ router.get('/history', async (req, res) => {
 // GET /api/analyze/stats - Get statistics
 router.get('/stats', authorize(...DASHBOARD_ROLES), async (req, res) => {
   try {
-    const stats = await Prediction.stats();
-    const recent = await Prediction.recent(7);
+    const [stats, recent, crimeReportStats] = await Promise.all([
+      Prediction.stats(),
+      Prediction.recent(7),
+      CrimeReport.stats()
+    ]);
 
     res.json({
       ...stats,
-      recent
+      recent,
+      crime_reports: crimeReportStats,
+      system: {
+        backend: {
+          status: 'online',
+          uptime_seconds: Math.round(process.uptime()),
+          node_env: process.env.NODE_ENV || 'development'
+        },
+        database: dbHealth(),
+        notifications: Notifications.getNotificationStatus(),
+        emergency_alerts: EmergencyAlerts.getEmergencyAlertStatus(),
+        generated_at: new Date().toISOString()
+      }
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch stats', details: err.message });
@@ -330,6 +348,36 @@ router.get('/crime-reports', authorize(...DASHBOARD_ROLES), async (req, res) => 
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch crime reports', details: err.message });
+  }
+});
+
+// PATCH /api/analyze/crime-reports/:id - Update crime report status (investigator only)
+router.patch('/crime-reports/:id', authorize(...DASHBOARD_ROLES), async (req, res) => {
+  try {
+    const { status, investigatorNotes } = req.body;
+    const updates = {};
+    if (status) updates.status = status;
+    if (investigatorNotes !== undefined) updates.investigatorNotes = investigatorNotes;
+
+    const updated = await CrimeReport.updateById(req.params.id, updates);
+    if (!updated) {
+      return res.status(404).json({ error: 'Crime report not found' });
+    }
+
+    await Log.write({
+      action: 'crime_report.updated',
+      message: `Investigator updated crime report status to: ${updated.status}`,
+      user: userSnapshot(req.user),
+      meta: {
+        reportId: updated._id,
+        status: updated.status,
+        hasNotes: investigatorNotes !== undefined
+      }
+    });
+
+    res.json({ report: updated });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update crime report', details: err.message });
   }
 });
 

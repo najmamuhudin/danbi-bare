@@ -63,6 +63,35 @@ class CrimeReportStore {
     return this.localReports.all();
   }
 
+  async stats() {
+    const reports = await this.all();
+    const statusCounts = reports.reduce((counts, report) => {
+      const status = report.status || 'unknown';
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    }, {});
+    const criticalCount = reports.filter((report) => (
+      report.emergencyAlert?.detected || Number(report.confidence || 0) >= 85
+    )).length;
+    const dangerCount = reports.filter((report) => {
+      const confidence = Number(report.confidence || 0);
+      return !report.emergencyAlert?.detected && confidence >= 60 && confidence < 85;
+    }).length;
+
+    return {
+      total: reports.length,
+      status_counts: statusCounts,
+      open_count: statusCounts.new || 0,
+      reviewing_count: statusCounts.reviewing || 0,
+      closed_count: statusCounts.closed || 0,
+      active_count: (statusCounts.new || 0) + (statusCounts.reviewing || 0),
+      emergency_count: reports.filter((report) => report.emergencyAlert?.detected).length,
+      critical_count: criticalCount,
+      danger_count: dangerCount,
+      monitored_count: Math.max(0, reports.length - criticalCount - dangerCount)
+    };
+  }
+
   async deleteById(id) {
     if (isMongoConnected()) {
       const deleted = await CrimeReportDocument.findByIdAndDelete(id).lean();
@@ -70,6 +99,23 @@ class CrimeReportStore {
     }
 
     return this.localReports.deleteById(id);
+  }
+
+  async updateById(id, updates) {
+    if (isMongoConnected()) {
+      try {
+        const doc = await CrimeReportDocument.findByIdAndUpdate(
+          id,
+          { $set: updates },
+          { new: true }
+        ).lean();
+        return doc || null;
+      } catch (err) {
+        console.warn(`Failed to update MongoDB crime report, using local fallback storage: ${err.message}`);
+      }
+    }
+
+    return this.localReports.updateById(id, updates);
   }
 }
 

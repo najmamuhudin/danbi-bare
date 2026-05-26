@@ -25,6 +25,16 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('crimewatch_auth');
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const login = async (credentials) => {
   const response = await api.post('/auth/login', credentials);
   return response.data;
@@ -94,6 +104,11 @@ export const getCrimeReports = async (page = 1, limit = 50) => {
 
 export const deleteCrimeReport = async (id) => {
   const response = await api.delete(`/analyze/crime-reports/${id}`);
+  return response.data;
+};
+
+export const updateCrimeReport = async (id, payload) => {
+  const response = await api.patch(`/analyze/crime-reports/${id}`, payload);
   return response.data;
 };
 

@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import {
+  ArrowLeft,
   Home,
   LogIn,
   LogOut,
@@ -31,8 +32,10 @@ const getLinkClass = (isActive, emphasis = false, mobile = false) => (
 const Navbar = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useSelector((state) => state.auth);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isAuthPage = ['/login', '/register'].includes(location.pathname);
 
   const handleLogout = () => {
     dispatch(logout());
@@ -65,6 +68,37 @@ const Navbar = () => {
       <span className={mobile ? 'inline' : 'hidden lg:inline'}>{label}</span>
     </NavLink>
   );
+
+  if (isAuthPage) {
+    const authPageLinks = [
+      { to: '/', label: 'Back home', icon: ArrowLeft },
+      { to: '/login', label: 'Log in', icon: LogIn },
+      { to: '/register', label: 'Register', icon: UserPlus, emphasis: true },
+    ];
+
+    return (
+      <nav className="sticky top-0 z-50 w-full border-b border-white/10 bg-surface/90 shadow-lg backdrop-blur-lg">
+        <div className="container mx-auto flex min-h-16 items-center justify-between gap-3 px-3 py-3 sm:px-4">
+          <NavLink to="/" className="group flex min-w-0 shrink-0 items-center gap-3">
+            <BrandLogo />
+          </NavLink>
+
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+            {authPageLinks.map(({ to, label, icon: Icon, emphasis }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) => getLinkClass(isActive, emphasis)}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </div>
+        </div>
+      </nav>
+    );
+  }
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-white/10 bg-surface/90 shadow-lg backdrop-blur-lg">

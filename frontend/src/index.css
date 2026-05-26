@@ -175,6 +175,47 @@
   box-shadow: var(--nav-shadow);
 }
 
+:root[data-theme='light'] .dashboard-shell {
+  background-color: #f6f8fb !important;
+  color: #111827 !important;
+}
+
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#070b13]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#080d19]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#090f1d]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#0a1122]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#0c152a]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#0c162d]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-[#060b13]"],
+:root[data-theme='light'] .dashboard-shell [class*="bg-black/"] {
+  background-color: rgba(255, 255, 255, 0.92) !important;
+}
+
+:root[data-theme='light'] .dashboard-shell .text-slate-100,
+:root[data-theme='light'] .dashboard-shell .text-slate-200,
+:root[data-theme='light'] .dashboard-shell .text-slate-300 {
+  color: #111827 !important;
+}
+
+:root[data-theme='light'] .dashboard-shell .text-slate-400,
+:root[data-theme='light'] .dashboard-shell .text-slate-500,
+:root[data-theme='light'] .dashboard-shell .text-slate-600 {
+  color: #64748b !important;
+}
+
+:root[data-theme='light'] .dashboard-shell [class*="border-cyan-500/10"],
+:root[data-theme='light'] .dashboard-shell [class*="border-cyan-500/15"],
+:root[data-theme='light'] .dashboard-shell [class*="border-cyan-500/20"],
+:root[data-theme='light'] .dashboard-shell [class*="border-slate-"] {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+:root[data-theme='light'] .dashboard-shell input,
+:root[data-theme='light'] .dashboard-shell textarea {
+  color: #0f172a !important;
+  background-color: rgba(255, 255, 255, 0.96) !important;
+}
+
 .force-white {
   color: #ffffff !important;
 }

@@ -85,8 +85,8 @@ crime-detection-system/
     src/
     package.json
   model/
-    Automatic_crime.ipynb
-    dataset.csv.csv
+    model sax.ipynb
+    lastdata.csv
 ```
 
 ## Requirements
@@ -221,10 +221,10 @@ http://localhost:5173
 
 ## Training The Model
 
-The original training notebook is:
+The training notebook is:
 
 ```text
-model/Automatic_crime.ipynb
+model/model sax.ipynb
 ```
 
 The backend also includes a training script command:
@@ -239,6 +239,12 @@ Model artifacts are expected in:
 ```text
 ai-model/model.pkl
 ai-model/vectorizer.pkl
+```
+
+The training script reads the cleaned dataset from:
+
+```text
+model/lastdata.csv
 ```
 
 If artifacts are missing or incompatible, the Flask API returns a model-unavailable error instead of making a rule-based prediction.

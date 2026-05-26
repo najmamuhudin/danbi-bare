@@ -262,8 +262,41 @@ const dispatchEmergencyAlert = async (prediction, report) => {
   return { channels };
 };
 
+const getEmergencyAlertStatus = () => {
+  const smsRecipients = splitList(process.env.EMERGENCY_ALERT_PHONES);
+  const emailRecipients = splitList(process.env.EMERGENCY_ALERT_EMAILS);
+  const smsSender = process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID;
+
+  return {
+    pipeline: {
+      enabled: emergencyAlertsEnabled()
+    },
+    sms: {
+      enabled: truthyEnv('EMERGENCY_ALERT_SMS_ENABLED'),
+      configured: Boolean(
+        smsRecipients.length &&
+        process.env.TWILIO_ACCOUNT_SID &&
+        process.env.TWILIO_AUTH_TOKEN &&
+        smsSender
+      ),
+      recipients: smsRecipients.length
+    },
+    email: {
+      enabled: truthyEnv('EMERGENCY_ALERT_EMAIL_ENABLED'),
+      configured: Boolean(
+        emailRecipients.length &&
+        process.env.SMTP_HOST &&
+        process.env.SMTP_USER &&
+        process.env.SMTP_PASS
+      ),
+      recipients: emailRecipients.length
+    }
+  };
+};
+
 module.exports = {
   detectPredictionEmergency,
   dispatchEmergencyAlert,
-  emergencyAlertsEnabled
+  emergencyAlertsEnabled,
+  getEmergencyAlertStatus
 };

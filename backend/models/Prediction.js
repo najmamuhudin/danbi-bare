@@ -11,6 +11,77 @@ const localPredictions = new JsonCollection('predictions.json');
 
 const isPrivileged = (user) => DASHBOARD_ROLES.includes(user?.role);
 
+const THREAT_KEYWORDS = [
+  'qarax',
+  'argagixiso',
+  'afduub',
+  'miino',
+  'dil',
+  'scam',
+  'weerar',
+  'isqarxin',
+  'hub',
+  'toorey',
+  'bomb',
+  'terror',
+  'attack',
+  'kidnap',
+  'weapon',
+  'fraud',
+  'phish',
+  'hate',
+  'threat'
+];
+
+const normalizeScore = (value) => {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(100, numeric > 1 ? numeric : numeric * 100));
+};
+
+const detectCrimeCategory = (text = '') => {
+  const normalized = text.toLowerCase();
+  if (normalized.includes('bomb') || normalized.includes('qarax') || normalized.includes('explosive') || normalized.includes('miino') || normalized.includes('bambo')) {
+    return 'Extremism';
+  }
+  if (normalized.includes('terror') || normalized.includes('argagixiso') || normalized.includes('attack') || normalized.includes('weerar') || normalized.includes('abduct') || normalized.includes('afduub')) {
+    return 'Violence';
+  }
+  if (normalized.includes('scam') || normalized.includes('fraud') || normalized.includes('money') || normalized.includes('invoice') || normalized.includes('lacag')) {
+    return 'Fraud';
+  }
+  if (normalized.includes('hack') || normalized.includes('phish') || normalized.includes('cyber') || normalized.includes('virus')) {
+    return 'Cybercrime';
+  }
+  if (normalized.includes('hate') || normalized.includes('racist') || normalized.includes('heeb') || normalized.includes('faan')) {
+    return 'Hate Speech';
+  }
+  if (normalized.includes('harass') || normalized.includes('bully') || normalized.includes('threat') || normalized.includes('aflagaado')) {
+    return 'Harassment';
+  }
+  return 'General Crime';
+};
+
+const getPlatformSource = (prediction) => {
+  const text = `${prediction.inputText || ''} ${prediction.input?.url || ''}`.toLowerCase();
+  if (text.includes('twitter') || text.includes('t.co') || text.includes('x.com')) return 'Twitter';
+  if (text.includes('facebook') || text.includes('fb.com')) return 'Facebook';
+  if (text.includes('telegram') || text.includes('t.me')) return 'Telegram';
+  if (text.includes('whatsapp') || text.includes('wa.me')) return 'WhatsApp';
+  return 'Web Source';
+};
+
+const incrementCount = (counts, key, amount = 1) => {
+  counts[key] = (counts[key] || 0) + amount;
+};
+
+const toCountArray = (counts, limit = null) => {
+  const entries = Object.entries(counts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return limit ? entries.slice(0, limit) : entries;
+};
+
 const normalizePrediction = (data) => {
   const result = data.result || data.overall || {};
   const input = data.input || {};
@@ -136,17 +207,7 @@ class PredictionStore {
   }
 
   async stats() {
-    if (isMongoConnected()) {
-      const [total, crimeCount, byType] = await Promise.all([
-        PredictionDocument.countDocuments(),
-        PredictionDocument.countDocuments({ isCrime: true }),
-        PredictionDocument.aggregate([{ $group: { _id: '$type', count: { $sum: 1 } } }])
-      ]);
-
-      return this.buildStats(total, crimeCount, byType);
-    }
-
-    const predictions = await localPredictions.all();
+    const predictions = await this.all();
     const total = predictions.length;
     const crimeCount = predictions.filter((prediction) => prediction.isCrime).length;
     const typeCounts = {};
@@ -154,10 +215,20 @@ class PredictionStore {
       typeCounts[prediction.type] = (typeCounts[prediction.type] || 0) + 1;
     });
     const byType = Object.entries(typeCounts).map(([type, count]) => ({ _id: type, count }));
-    return this.buildStats(total, crimeCount, byType);
+    return this.buildStats(total, crimeCount, byType, predictions);
   }
 
-  buildStats(total, crimeCount, byType) {
+  async all() {
+    if (isMongoConnected()) {
+      const predictions = await PredictionDocument.find().sort({ createdAt: -1 }).lean();
+      return predictions.map(toApi);
+    }
+
+    const predictions = await localPredictions.all();
+    return predictions.map(toApi);
+  }
+
+  buildStats(total, crimeCount, byType, predictions = []) {
     const typeStats = {};
     byType.forEach((item) => {
       typeStats[item._id] = item.count;
@@ -168,7 +239,80 @@ class PredictionStore {
       crime_count: crimeCount,
       not_crime_count: total - crimeCount,
       crime_percentage: total > 0 ? Math.round((crimeCount / total) * 100) : 0,
-      by_type: typeStats
+      by_type: typeStats,
+      analytics: this.buildAnalytics(predictions)
+    };
+  }
+
+  buildAnalytics(predictions = []) {
+    const categoryCounts = {};
+    const platformCounts = {};
+    const keywordCounts = {};
+    const subjects = new Map();
+    const today = new Date();
+    const days = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date(today);
+      date.setHours(0, 0, 0, 0);
+      date.setDate(date.getDate() - (6 - offset));
+      const key = date.toISOString().slice(0, 10);
+      return { key, label: date.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase(), count: 0 };
+    });
+    const trendByKey = new Map(days.map((day) => [day.key, day]));
+
+    predictions.forEach((prediction) => {
+      const text = String(prediction.inputText || prediction.input?.text || prediction.input?.url || '');
+      const normalizedText = text.toLowerCase();
+      const category = detectCrimeCategory(text);
+      const platform = getPlatformSource(prediction);
+      const threatScore = normalizeScore(prediction.crimeProbability ?? prediction.crime_probability ?? prediction.confidence);
+
+      incrementCount(categoryCounts, category);
+      incrementCount(platformCounts, platform);
+
+      if (prediction.isCrime) {
+        const createdAt = new Date(prediction.createdAt);
+        if (Number.isFinite(createdAt.getTime())) {
+          const trendDay = trendByKey.get(createdAt.toISOString().slice(0, 10));
+          if (trendDay) trendDay.count += 1;
+        }
+
+        const keywords = [
+          ...(prediction.emergencyAlert?.matchedKeywords || []),
+          ...THREAT_KEYWORDS.filter((keyword) => normalizedText.includes(keyword))
+        ];
+        [...new Set(keywords)].forEach((keyword) => incrementCount(keywordCounts, keyword));
+      }
+
+      if (prediction.isCrime || threatScore >= 60) {
+        const key = prediction.user?.id || prediction.user?.name || prediction.input?.url || 'unattributed-source';
+        const current = subjects.get(key) || {
+          id: key,
+          name: prediction.user?.name || prediction.input?.url || 'Unattributed source',
+          handle: prediction.user?.role || prediction.type || 'source',
+          riskScore: 0,
+          matches: 0,
+          platform,
+          lastSignalAt: prediction.createdAt
+        };
+        current.matches += 1;
+        current.riskScore = Math.max(current.riskScore, threatScore);
+        current.lastSignalAt = new Date(prediction.createdAt) > new Date(current.lastSignalAt) ? prediction.createdAt : current.lastSignalAt;
+        current.status = current.riskScore >= 85 ? 'Flagged' : current.riskScore >= 70 ? 'Under Review' : 'Monitored';
+        current.activity = current.matches >= 5 ? 'High' : current.matches >= 2 ? 'Medium' : 'Low';
+        subjects.set(key, current);
+      }
+    });
+
+    return {
+      categories: toCountArray(categoryCounts),
+      platforms: toCountArray(platformCounts),
+      keywords: toCountArray(keywordCounts, 12).map((item) => ({
+        word: item.name,
+        count: item.count,
+        weight: item.count >= 5 ? 'high' : item.count >= 2 ? 'mid' : 'low'
+      })),
+      trend: days,
+      high_risk_subjects: [...subjects.values()].sort((a, b) => b.riskScore - a.riskScore).slice(0, 12)
     };
   }
 

@@ -185,11 +185,19 @@ const emitPredictionEvents = (prediction, report) => {
   emitHighRiskPrediction(prediction);
 };
 
+const getNotificationStatus = () => ({
+  socket_ready: Boolean(io),
+  recent_count: recentNotifications.length,
+  recent_limit: RECENT_LIMIT,
+  high_risk_confidence_threshold: HIGH_RISK_CONFIDENCE_THRESHOLD
+});
+
 module.exports = {
   emitHighRiskPrediction,
   emitNewReport,
   emitNotification,
   emitPredictionEvents,
   emitSuspiciousActivity,
+  getNotificationStatus,
   initializeNotifications
 };
