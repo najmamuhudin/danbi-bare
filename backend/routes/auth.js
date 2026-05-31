@@ -119,6 +119,46 @@ router.get('/me', authenticate, (req, res) => {
   res.json({ user: req.user });
 });
 
+// PATCH /api/auth/me/password
+router.patch('/me/password', authenticate, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+
+    const userWithPassword = await User.findById(req.user._id);
+    if (!userWithPassword) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const passwordMatches = await User.verifyPassword(userWithPassword, currentPassword);
+    if (!passwordMatches) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const user = await User.updatePassword(req.user._id, newPassword);
+    await Log.write({
+      action: 'auth.password_updated',
+      message: 'User password updated',
+      user: {
+        id: user._id,
+        name: user.name,
+        role: user.role,
+        email: user.email
+      }
+    });
+
+    res.json({ user });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update password', details: err.message });
+  }
+});
+
 // GET /api/auth/roles
 router.get('/roles', async (req, res) => {
   const usersCount = await User.count();

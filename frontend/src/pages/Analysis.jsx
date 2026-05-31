@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, Globe, Upload, Loader2, AlertTriangle, ShieldCheck, FileSpreadsheet, LayoutList, Siren } from 'lucide-react';
-import { analyzeText, analyzeUrl, analyzeFile, analyzeBatch, getModelInfo } from '../services';
+import { FileText, Globe, Upload, Loader2, AlertTriangle, ShieldCheck, FileSpreadsheet, LayoutList, Siren, X } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { analyzeText, analyzeUrl, analyzeBatch, getModelInfo } from '../services';
 
 const formatPercent = (value) => (
   Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : null
@@ -11,11 +12,49 @@ const getClassifierLabel = (info) => (
   [info?.vectorizer_type, info?.model_type].filter(Boolean).join(' + ') || info?.model_type || 'Python classifier'
 );
 
+const MAX_FILE_SIZE_MB = 100;
+const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
+const ALLOWED_FILE_EXTENSIONS = ['txt', 'csv', 'md'];
+
+const readFileAsText = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+  reader.readAsText(file);
+});
+
+const extractRowsFromFile = async (file) => {
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  const text = await readFileAsText(file);
+
+  if (extension === 'csv') {
+    const workbook = XLSX.read(text, { type: 'string', raw: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      blankrows: false,
+      defval: '',
+    });
+
+    return rows
+      .map((row) => row.map((cell) => String(cell).trim()).filter(Boolean).join(' '))
+      .filter(Boolean);
+  }
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
+
 const Analysis = () => {
+  const fileInputId = useId();
+  const fileInputRef = useRef(null);
   const [activeTab, setActiveTab] = useState('text');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [modelInfo, setModelInfo] = useState(null);
 
   // Form states
@@ -84,13 +123,76 @@ const Analysis = () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await analyzeFile(fileInput);
-      setResult({ type: 'file', data });
+      const rows = await extractRowsFromFile(fileInput);
+      if (!rows.length) {
+        setError('No rows were found in this file');
+        return;
+      }
+
+      const data = await analyzeBatch(rows);
+      setResult({
+        type: 'file',
+        data: {
+          filename: fileInput.name,
+          segments: data.results.map((item, index) => ({
+            ...item,
+            segment_id: index + 1,
+            row_number: index + 1,
+          })),
+          summary: {
+            ...data.summary,
+            total_rows: rows.length,
+            total_segments: rows.length,
+          },
+          emergencyAlert: data.emergencyAlert,
+        },
+      });
     } catch (err) {
       setError(err.response?.data?.details || err.response?.data?.error || err.message || "An error occurred");
     } finally {
       setLoading(false);
     }
+  };
+
+  const validateAndSetFile = (file) => {
+    setResult(null);
+
+    if (!file) {
+      setFileInput(null);
+      return;
+    }
+
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!ALLOWED_FILE_EXTENSIONS.includes(extension)) {
+      setFileInput(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setError('Please upload a .txt, .csv, or .md file');
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      setFileInput(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setError(`File is too large. Maximum size is ${MAX_FILE_SIZE_MB}MB`);
+      return;
+    }
+
+    setError(null);
+    setFileInput(file);
+  };
+
+  const handleFileChange = (event) => {
+    validateAndSetFile(event.target.files?.[0]);
+  };
+
+  const handleFileDrop = (event) => {
+    event.preventDefault();
+    setIsDraggingFile(false);
+    validateAndSetFile(event.dataTransfer.files?.[0]);
+  };
+
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
   };
 
   const handleBatchSubmit = async (e) => {
@@ -171,22 +273,70 @@ const Analysis = () => {
 
             {activeTab === 'file' && (
               <form onSubmit={handleFileSubmit} className="flex flex-col gap-4">
-                <label className="text-sm font-medium text-white/80">Upload a document to analyze its paragraphs:</label>
-                <div className="border-2 border-dashed border-white/20 rounded-xl p-5 text-center hover:bg-white/5 transition-colors cursor-pointer group relative sm:p-8">
-                  <input 
-                    type="file" 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
-                    accept=".txt,.csv,.md"
-                    onChange={(e) => setFileInput(e.target.files[0])}
-                  />
+                <label className="text-sm font-medium text-white/80" htmlFor={fileInputId}>Upload a document to analyze its paragraphs:</label>
+                <input
+                  ref={fileInputRef}
+                  id={fileInputId}
+                  type="file"
+                  className="sr-only"
+                  accept=".txt,.csv,.md,text/plain,text/csv,text/markdown"
+                  onChange={handleFileChange}
+                />
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`rounded-xl border-2 border-dashed p-5 text-center transition-colors cursor-pointer group sm:p-8 ${
+                    isDraggingFile
+                      ? 'border-primary bg-primary/10'
+                      : 'border-white/20 hover:bg-white/5'
+                  }`}
+                  onClick={openFilePicker}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openFilePicker();
+                    }
+                  }}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setIsDraggingFile(true);
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDragLeave={() => setIsDraggingFile(false)}
+                  onDrop={handleFileDrop}
+                >
                   <FileSpreadsheet className="w-12 h-12 text-primary mx-auto mb-4 group-hover:scale-110 transition-transform" />
-                  <h3 className="text-lg font-medium text-white mb-1">
+                  <h3 className="text-lg font-medium text-white mb-1 break-words">
                     {fileInput ? fileInput.name : 'Click or drag a file to upload'}
                   </h3>
                   <p className="text-sm text-textMuted">
-                    {fileInput ? `${(fileInput.size / 1024).toFixed(1)} KB` : 'Supports .txt, .csv, .md (up to 10MB)'}
+                    {fileInput ? `${(fileInput.size / 1024 / 1024).toFixed(2)} MB selected` : `Supports .txt, .csv, .md (up to ${MAX_FILE_SIZE_MB}MB)`}
                   </p>
+                  <button
+                    type="button"
+                    className="mx-auto mt-5 inline-flex items-center justify-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/20"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openFilePicker();
+                    }}
+                  >
+                    <Upload className="h-4 w-4" />
+                    Choose File
+                  </button>
                 </div>
+                {fileInput && (
+                  <button
+                    type="button"
+                    className="self-start inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-textMuted transition-colors hover:bg-white/5 hover:text-white"
+                    onClick={() => {
+                      setFileInput(null);
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                    Remove file
+                  </button>
+                )}
                 <button type="submit" className="btn-primary mt-2" disabled={loading || !fileInput}>
                   {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Analyze Document'}
                 </button>
@@ -407,28 +557,10 @@ const ResultDisplay = ({ result, modelInfo }) => {
           </h2>
           <EmergencyAlertBanner alert={data.emergencyAlert} />
           
-          {isFile && data.overall && (
-            <div className="bg-surface p-4 rounded-xl border border-white/5 shadow-inner mb-6">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-xs text-textMuted uppercase tracking-wider mb-1">Overall assessment</p>
-                  <div className={`font-bold ${data.overall.is_crime ? 'text-danger' : 'text-success'}`}>
-                    {data.overall.is_crime ? 'crime-related' : 'not crime-related'}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-textMuted mb-1">Confidence</p>
-                  <span className="font-mono bg-white/5 px-2 py-1 rounded">{data.overall.confidence}%</span>
-                </div>
-              </div>
-              <PredictionTrustDetails data={data.overall} modelInfo={modelInfo} />
-            </div>
-          )}
-          
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
             <div className="bg-surface p-3 rounded-lg border border-white/5 text-center">
-              <div className="text-2xl font-bold text-white">{data.summary.total || data.summary.total_segments}</div>
-              <div className="text-xs text-textMuted mt-1 uppercase tracking-wider">Total</div>
+              <div className="text-2xl font-bold text-white">{data.summary.total || data.summary.total_rows || data.summary.total_segments}</div>
+              <div className="text-xs text-textMuted mt-1 uppercase tracking-wider">{isFile ? 'Rows' : 'Total'}</div>
             </div>
             <div className="bg-danger/10 p-3 rounded-lg border border-danger/20 text-center">
               <div className="text-2xl font-bold text-danger">{data.summary.crime_count}</div>
@@ -443,7 +575,7 @@ const ResultDisplay = ({ result, modelInfo }) => {
         
         <div className="p-4 flex-1 overflow-y-auto sm:p-6">
           <h3 className="text-sm font-semibold text-textMuted mb-4 uppercase tracking-wider">
-            {isFile ? 'Text Segments' : 'Item Results'}
+            {isFile ? 'File Rows' : 'Item Results'}
           </h3>
           
           <div className="flex flex-col gap-3">
@@ -454,11 +586,18 @@ const ResultDisplay = ({ result, modelInfo }) => {
                   <div className={`absolute left-0 top-0 bottom-0 w-1 ${item.is_crime ? 'bg-danger' : 'bg-success'}`} />
                   
                   <div className="flex flex-wrap justify-between items-start gap-2 mb-2 pl-2">
-                    <span className={`text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                      item.is_crime ? 'bg-danger/20 text-danger' : 'bg-success/20 text-success'
-                    }`}>
-                      {item.is_crime ? 'crime-related' : 'not crime-related'}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isFile && (
+                        <span className="rounded bg-white/5 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-textMuted">
+                          Row {item.row_number || item.segment_id || idx + 1}
+                        </span>
+                      )}
+                      <span className={`text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                        item.is_crime ? 'bg-danger/20 text-danger' : 'bg-success/20 text-success'
+                      }`}>
+                        {item.is_crime ? 'crime-related' : 'not crime-related'}
+                      </span>
+                    </div>
                     <span className="text-xs font-mono text-textMuted bg-white/5 px-1.5 py-0.5 rounded">
                       {item.confidence}%
                     </span>

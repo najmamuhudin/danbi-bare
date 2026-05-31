@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import Footer from './components/Footer';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/ProtectedRoute';
 import Sidebar from './components/Sidebar';
@@ -10,11 +11,14 @@ import Analysis from './pages/Analysis';
 import AdminPanel from './pages/AdminPanel';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
+import PoliceHelp from './pages/PoliceHelp';
+import PoliceSettings from './pages/PoliceSettings';
 import PredictionHistory from './pages/PredictionHistory';
+import Profile from './pages/Profile';
 import Register from './pages/Register';
 import Team from './pages/Team';
 import Unauthorized from './pages/Unauthorized';
-import { ADMIN_ROLES, DASHBOARD_ROLES } from './utils/roles';
+import { ADMIN_ROLES, DASHBOARD_ROLES, POLICE_INVESTIGATOR_ROLES } from './utils/roles';
 
 function AppContent() {
   const dispatch = useDispatch();
@@ -30,6 +34,7 @@ function AppContent() {
   const isDashboard = location.pathname.startsWith('/dashboard');
   const isAuthPage = ['/login', '/register'].includes(location.pathname);
   const showSidebar = !isDashboard && !isAuthPage;
+  const showFooter = !isDashboard;
 
   return (
     <div className="min-h-screen flex flex-col bg-background relative overflow-hidden">
@@ -70,6 +75,30 @@ function AppContent() {
               )}
             />
             <Route
+              path="/profile"
+              element={(
+                <ProtectedRoute>
+                  <Profile />
+                </ProtectedRoute>
+              )}
+            />
+            <Route
+              path="/police-settings"
+              element={(
+                <ProtectedRoute roles={POLICE_INVESTIGATOR_ROLES}>
+                  <PoliceSettings />
+                </ProtectedRoute>
+              )}
+            />
+            <Route
+              path="/police-help"
+              element={(
+                <ProtectedRoute roles={POLICE_INVESTIGATOR_ROLES}>
+                  <PoliceHelp />
+                </ProtectedRoute>
+              )}
+            />
+            <Route
               path="/dashboard"
               element={(
                 <ProtectedRoute roles={DASHBOARD_ROLES}>
@@ -88,6 +117,8 @@ function AppContent() {
           </Routes>
         </main>
       </div>
+
+      {showFooter && <Footer />}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { useSelector } from 'react-redux';
-import { Activity, Clock, FileSearch, UserCog } from 'lucide-react';
-import { canViewAdmin, canViewDashboard } from '../utils/roles';
+import { Activity, CircleHelp, Clock, FileSearch, Settings, UserCircle, UserCog } from 'lucide-react';
+import { canViewAdmin, canViewDashboard, canViewPoliceInvestigatorTools } from '../utils/roles';
 
 const getLinkClass = (isActive, emphasis = false) => (
   `flex min-h-11 items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-all ${
@@ -26,6 +26,13 @@ const Sidebar = () => {
     { to: '/analyze', label: 'Analyze', icon: FileSearch, emphasis: true },
     ...(canViewAdmin(user.role) ? [{ to: '/admin', label: 'Admin', icon: UserCog, emphasis: true }] : []),
     { to: '/history', label: 'History', icon: Clock },
+    { to: '/profile', label: 'Profile', icon: UserCircle },
+    ...(canViewPoliceInvestigatorTools(user.role)
+      ? [
+          { to: '/police-settings', label: 'Settings', icon: Settings },
+          { to: '/police-help', label: 'Help / Guide', icon: CircleHelp },
+        ]
+      : []),
   ];
 
   return (

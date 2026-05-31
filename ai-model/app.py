@@ -1,5 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
+import csv
+import io
 import logging
 import os
 import re
@@ -201,7 +203,7 @@ def classify_batch_endpoint():
         return jsonify({"error": "Texts array is required"}), 400
 
     results = []
-    for text in texts[:50]:
+    for text in texts:
         text = str(text).strip()
         if text:
             results.append({
@@ -221,6 +223,25 @@ def classify_batch_endpoint():
     })
 
 
+def extract_file_rows(content, filename):
+    extension = Path(filename).suffix.lower()
+
+    if extension == ".csv":
+        rows = []
+        reader = csv.reader(io.StringIO(content))
+        for row in reader:
+            row_text = " ".join(str(cell).strip() for cell in row if str(cell).strip())
+            if row_text:
+                rows.append(row_text)
+        return rows
+
+    return [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip()
+    ]
+
+
 @app.post("/api/classify/file")
 def classify_file_endpoint():
     uploaded = request.files.get("file")
@@ -228,11 +249,7 @@ def classify_file_endpoint():
         return jsonify({"error": "File is required"}), 400
 
     content = uploaded.read().decode("utf-8", errors="ignore")
-    segments = [
-        segment.strip()
-        for segment in re.split(r"\n\s*\n|\.\s+", content)
-        if len(segment.strip()) > 20
-    ]
+    segments = extract_file_rows(content, uploaded.filename)
 
     if not segments:
         overall = classify_text_value(content)
@@ -242,6 +259,7 @@ def classify_file_endpoint():
             "segments": [],
             "summary": {
                 "total_segments": 1,
+                "total_rows": 1,
                 "crime_count": 1 if overall["is_crime"] else 0,
                 "not_crime_count": 0 if overall["is_crime"] else 1,
                 "crime_percentage": 100 if overall["is_crime"] else 0,
@@ -252,6 +270,7 @@ def classify_file_endpoint():
     for index, segment in enumerate(segments, start=1):
         segment_results.append({
             "segment_id": index,
+            "row_number": index,
             "text": segment,
             **classify_text_value(segment),
         })
@@ -264,6 +283,7 @@ def classify_file_endpoint():
         "segments": segment_results,
         "summary": {
             "total_segments": len(segment_results),
+            "total_rows": len(segment_results),
             "crime_count": crime_count,
             "not_crime_count": len(segment_results) - crime_count,
             "crime_percentage": round((crime_count / len(segment_results)) * 100, 1),

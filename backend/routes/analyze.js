@@ -14,6 +14,8 @@ const Notifications = require('../services/notifications');
 
 const PYTHON_API = process.env.PYTHON_API_URL || 'http://localhost:5000';
 const PYTHON_API_TIMEOUT_MS = Number(process.env.PYTHON_API_TIMEOUT_MS || 120000);
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 100);
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const pythonApi = axios.create({
   baseURL: PYTHON_API,
   timeout: PYTHON_API_TIMEOUT_MS
@@ -84,7 +86,7 @@ const withPredictionMeta = (result, prediction) => {
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['text/plain', 'text/csv', 'application/json', 'text/html'];
     if (allowedTypes.includes(file.mimetype) || file.originalname.match(/\.(txt|csv|json|html|md)$/)) {
@@ -94,6 +96,7 @@ const upload = multer({
     }
   }
 });
+const uploadSingleFile = upload.single('file');
 
 // POST /api/analyze/text - Classify a single text
 router.post('/text', async (req, res) => {
@@ -170,7 +173,18 @@ router.post('/url', async (req, res) => {
 });
 
 // POST /api/analyze/file - Upload and classify file
-router.post('/file', upload.single('file'), async (req, res) => {
+router.post('/file', (req, res, next) => {
+  uploadSingleFile(req, res, (err) => {
+    if (err) {
+      const details = err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE'
+        ? `File is too large. Maximum size is ${MAX_UPLOAD_MB}MB`
+        : err.message;
+      return res.status(400).json({ error: 'File upload failed', details });
+    }
+
+    return next();
+  });
+}, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'File is required' });
@@ -184,7 +198,9 @@ router.post('/file', upload.single('file'), async (req, res) => {
     });
 
     const response = await pythonApi.post('/api/classify/file', fileFormData, {
-      headers: fileFormData.getHeaders()
+      headers: fileFormData.getHeaders(),
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
     });
     const result = response.data;
 
@@ -310,8 +326,8 @@ router.get('/stats', authorize(...DASHBOARD_ROLES), async (req, res) => {
   }
 });
 
-// GET /api/analyze/crime-reports/export - Export all crime reports (admin only)
-router.get('/crime-reports/export', authorize(ROLES.ADMIN), async (req, res) => {
+// GET /api/analyze/crime-reports/export - Export all crime reports for dashboard users
+router.get('/crime-reports/export', authorize(...DASHBOARD_ROLES), async (req, res) => {
   try {
     const format = String(req.query.format || 'csv').trim().toLowerCase();
     const reports = await CrimeReport.all();

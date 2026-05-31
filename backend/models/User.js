@@ -221,6 +221,31 @@ class UserDB {
     return this.sanitize(user);
   }
 
+  async updatePassword(id, password) {
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+
+    if (isMongoConnected()) {
+      await this.ensureMongoSeeded();
+      const user = await UserDocument.findByIdAndUpdate(
+        id,
+        { passwordHash },
+        { new: true }
+      );
+      return this.sanitize(user);
+    }
+
+    const users = await this.load();
+    const user = users.find((item) => item._id === id);
+    if (!user) {
+      return null;
+    }
+
+    user.passwordHash = passwordHash;
+    user.updatedAt = new Date().toISOString();
+    await this.persist();
+    return this.sanitize(user);
+  }
+
   async deleteById(id) {
     if (isMongoConnected()) {
       await this.ensureMongoSeeded();

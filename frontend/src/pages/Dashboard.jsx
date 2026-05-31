@@ -30,7 +30,6 @@ import {
   RefreshCw,
   Search,
   Send,
-  Settings as SettingsIcon,
   Shield,
   ShieldAlert,
   ShieldCheck,
@@ -66,6 +65,7 @@ import { LogoMark } from '../components/Logo';
 // API Configuration URLs
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_URL.replace(/\/api\/?$/, '');
+const DASHBOARD_REFRESH_INTERVAL_MS = 15000;
 
 const normalizeScore = (value) => {
   const numeric = Number(value || 0);
@@ -74,13 +74,6 @@ const normalizeScore = (value) => {
 };
 
 const formatPercent = (value) => `${Math.round(normalizeScore(value))}%`;
-
-const channelStatus = (channel) => {
-  if (!channel) return { label: 'UNKNOWN', className: 'bg-slate-900 border-slate-800 text-slate-500' };
-  if (channel.enabled === false) return { label: 'DISABLED', className: 'bg-slate-900 border-slate-800 text-slate-500' };
-  if (channel.configured === false) return { label: 'UNCONFIGURED', className: 'bg-amber-950/40 border-amber-800/40 text-amber-400' };
-  return { label: 'ENABLED', className: 'bg-emerald-950/50 border-emerald-800/40 text-emerald-400' };
-};
 
 const relativeTime = (value) => {
   const timestamp = new Date(value).getTime();
@@ -92,6 +85,100 @@ const relativeTime = (value) => {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+};
+
+const compactAlertText = (value = '', max = 240) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+};
+
+const getAlertCategories = (alert) => (
+  alert.payload?.categories?.length
+    ? alert.payload.categories.join(', ')
+    : alert.emergencyAlert?.categories?.map((category) => category.label).join(', ')
+);
+
+const getAlertKeywords = (alert) => (
+  alert.payload?.matchedKeywords?.length
+    ? alert.payload.matchedKeywords.join(', ')
+    : alert.emergencyAlert?.matchedKeywords?.join(', ')
+);
+
+const getAlertSnippet = (alert) => (
+  compactAlertText(
+    alert.payload?.inputText ||
+    alert.inputText ||
+    alert.message ||
+    'No alert text was stored for this incident.'
+  )
+);
+
+const getAlertCardClasses = (severity) => {
+  if (severity === 'critical') {
+    return {
+      shell: 'border-red-500/30 bg-red-950/20',
+      badge: 'bg-red-500/15 border-red-500/30 text-red-300',
+      stripe: 'bg-red-500'
+    };
+  }
+
+  if (severity === 'danger') {
+    return {
+      shell: 'border-amber-500/25 bg-amber-950/15',
+      badge: 'bg-amber-500/15 border-amber-500/30 text-amber-300',
+      stripe: 'bg-amber-400'
+    };
+  }
+
+  return {
+    shell: 'border-cyan-500/20 bg-cyan-950/10',
+    badge: 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300',
+    stripe: 'bg-cyan-400'
+  };
+};
+
+const csvValue = (value) => (
+  `"${String(value ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`
+);
+
+const reportsToCsv = (reports) => {
+  const headers = [
+    'id',
+    'prediction_id',
+    'status',
+    'prediction',
+    'confidence',
+    'user_name',
+    'user_role',
+    'input_text',
+    'created_at'
+  ];
+  const rows = reports.map((report) => [
+    report._id,
+    report.predictionId,
+    report.status,
+    report.prediction,
+    report.confidence,
+    report.user?.name,
+    report.user?.role,
+    report.inputText,
+    report.createdAt
+  ].map(csvValue).join(','));
+
+  return [headers.join(','), ...rows].join('\n');
+};
+
+const downloadTextFile = (content, filename, type) => {
+  const blob = new Blob([content], { type });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  link.parentNode.removeChild(link);
+  window.URL.revokeObjectURL(url);
 };
 
 // Utility helper to map platform source icon
@@ -160,7 +247,7 @@ const Dashboard = () => {
   const { user, token } = useSelector((state) => state.auth);
 
   // Layout Tab State
-  const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard', 'investigations', 'threat', 'posts', 'categories', 'users', 'evidence', 'reports', 'alerts', 'settings'
+  const [activeTab, setActiveTab] = useState('dashboard');
   
   // Real-time Connection State
   const [socketConnected, setSocketConnected] = useState(false);
@@ -173,6 +260,7 @@ const Dashboard = () => {
   const [history, setHistory] = useState([]);
   const [crimeReports, setCrimeReports] = useState([]);
   const [modelInfo, setModelInfo] = useState(null);
+  const [lastTelemetryUpdate, setLastTelemetryUpdate] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -183,6 +271,7 @@ const Dashboard = () => {
   const [caseNoteInput, setCaseNoteInput] = useState('');
   const [updatingCaseId, setUpdatingCaseId] = useState(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState(null);
 
   // Audio Context ref for alert sounds
   const audioContextRef = useRef(null);
@@ -246,7 +335,7 @@ const Dashboard = () => {
         title: notification.title || 'Live Threat Detected',
         message: notification.message || 'Suspicious activity flagged by AI.',
         type: notification.type || 'suspicious_activity',
-        severity: notification.payload?.severity || (notification.type === 'emergency_alert' ? 'critical' : 'danger'),
+        severity: notification.severity || notification.payload?.severity || (notification.type === 'emergency_alert' ? 'critical' : 'danger'),
         createdAt: notification.createdAt || new Date().toISOString(),
         payload: notification.payload || {}
       };
@@ -280,6 +369,7 @@ const Dashboard = () => {
       setHistory(historyData.predictions || historyData.analyses || []);
       setCrimeReports(reportsData.reports || []);
       setModelInfo(modelData);
+      setLastTelemetryUpdate(new Date());
     } catch (err) {
       setError('System connection failed. Unable to fetch telemetry data.');
       console.error(err);
@@ -298,6 +388,7 @@ const Dashboard = () => {
       setStats(statsData);
       setCrimeReports(reportsData.reports || []);
       setHistory(historyData.predictions || historyData.analyses || []);
+      setLastTelemetryUpdate(new Date());
     } catch (e) {
       console.warn('Failed to update stats in background:', e);
     }
@@ -312,6 +403,16 @@ const Dashboard = () => {
   useEffect(() => {
     fetchAllData();
   }, []);
+
+  useEffect(() => {
+    if (!token) return undefined;
+
+    const interval = window.setInterval(() => {
+      fetchStatsOnly();
+    }, DASHBOARD_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [token]);
 
   // Update Crime Report Status (Investigator action)
   const handleUpdateStatus = async (id, newStatus) => {
@@ -356,20 +457,36 @@ const Dashboard = () => {
     crimeReports.find((report) => report.predictionId === prediction._id || report.inputText === prediction.inputText)
   );
 
+  const handleInvestigatePost = async (post) => {
+    const matchingReport = findReportForPrediction(post);
+    if (!matchingReport) {
+      alert('Kiiskan weli crime report looma sameyn. Crime-related predictions keliya ayaa investigation laga furi karaa.');
+      return;
+    }
+
+    if (matchingReport.status === 'new') {
+      await handleUpdateStatus(matchingReport._id, 'reviewing');
+    }
+
+    setSelectedCaseId(matchingReport._id);
+    setActiveTab('investigations');
+  };
+
   const handleFlagPost = async (post) => {
     const matchingReport = findReportForPrediction(post);
     if (!matchingReport) {
-      alert('This prediction has no crime report record to flag. Run investigation from an active threat report first.');
+      alert('Kiiskan lama flag-gareyn karo sababtoo ah crime report record ma leh.');
       return;
     }
     await handleUpdateStatus(matchingReport._id, 'reviewing');
     setSelectedCaseId(matchingReport._id);
+    setActiveTab('investigations');
   };
 
   const handleRemovePost = async (post) => {
     const matchingReport = findReportForPrediction(post);
     if (!matchingReport) {
-      alert('No removable investigation record exists for this prediction.');
+      alert('Kiiskan lama tirtiri karo sababtoo ah report record ma leh.');
       return;
     }
     await handleDeleteReport(matchingReport._id);
@@ -377,28 +494,54 @@ const Dashboard = () => {
 
   const handleViewPostDetails = (post) => {
     const matchingReport = findReportForPrediction(post);
-    if (matchingReport) {
-      setSelectedCaseId(matchingReport._id);
-      setActiveTab('investigations');
-      return;
-    }
-    alert(`Prediction ${post._id}\n\nSource: ${post.platform}\nCategory: ${post.category}\nThreat score: ${formatPercent(post.threatScore)}\n\n${post.inputText || 'No text payload stored.'}`);
+    alert([
+      `Prediction: ${post._id}`,
+      `Report: ${matchingReport?._id || 'No linked report'}`,
+      `Source: ${post.platform}`,
+      `Category: ${post.category}`,
+      `Threat score: ${formatPercent(post.threatScore)}`,
+      `Status: ${matchingReport?.status || 'prediction only'}`,
+      '',
+      post.inputText || 'No text payload stored.'
+    ].join('\n'));
   };
 
   // Perform CSV export trigger
   const handleExport = async (format) => {
+    setExportingFormat(format);
+    const date = new Date().toISOString().slice(0, 10);
     try {
       const blob = await exportCrimeReports(format);
       const url = window.URL.createObjectURL(new Blob([blob]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `Crime_Detector_Threat_Export_${new Date().toISOString().slice(0, 10)}.${format}`);
+      link.setAttribute('download', `Crime_Detector_Threat_Export_${date}.${format}`);
       document.body.appendChild(link);
       link.click();
       link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Export failed:', err);
-      alert('Failed to export dataset reports.');
+      try {
+        if (format === 'json') {
+          downloadTextFile(
+            JSON.stringify({ exportedAt: new Date().toISOString(), reports: crimeReports }, null, 2),
+            `Crime_Detector_Threat_Export_${date}.json`,
+            'application/json;charset=utf-8'
+          );
+        } else {
+          downloadTextFile(
+            reportsToCsv(crimeReports),
+            `Crime_Detector_Threat_Export_${date}.csv`,
+            'text/csv;charset=utf-8'
+          );
+        }
+      } catch (fallbackErr) {
+        console.error('Client export fallback failed:', fallbackErr);
+        alert(err.response?.data?.details || err.response?.data?.error || 'Failed to export dataset reports.');
+      }
+    } finally {
+      setExportingFormat(null);
     }
   };
 
@@ -574,12 +717,15 @@ const Dashboard = () => {
   ), [crimeReports]);
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const suspiciousPosts = useMemo(() => (
+    parsedPredictions.filter((post) => post.isCrime || post.threatScore >= 60)
+  ), [parsedPredictions]);
 
   // Filter posts based on global search
   const filteredPosts = useMemo(() => {
-    if (!normalizedSearchQuery) return parsedPredictions;
+    if (!normalizedSearchQuery) return suspiciousPosts;
     const query = normalizedSearchQuery;
-    return parsedPredictions.filter((post) =>
+    return suspiciousPosts.filter((post) =>
       matchesSearch(query, [
         post._id,
         post.inputText,
@@ -592,7 +738,7 @@ const Dashboard = () => {
         formatPercent(post.threatScore)
       ])
     );
-  }, [parsedPredictions, normalizedSearchQuery]);
+  }, [suspiciousPosts, normalizedSearchQuery]);
 
   // Filter investigations based on search
   const filteredInvestigations = useMemo(() => {
@@ -683,23 +829,33 @@ const Dashboard = () => {
   const categoryMonitorCards = useMemo(() => {
     const total = Math.max(1, categoryChartData.reduce((sum, item) => sum + item.count, 0));
     const palette = {
-      Extremism: 'border-red-500/25 bg-red-950/5 text-red-400',
-      Violence: 'border-amber-500/20 bg-amber-950/5 text-amber-400',
-      Fraud: 'border-cyan-500/15 bg-cyan-950/5 text-cyan-400',
-      Cybercrime: 'border-violet-500/20 bg-violet-950/5 text-violet-400',
-      'Hate Speech': 'border-pink-500/20 bg-pink-950/5 text-pink-400',
-      Harassment: 'border-blue-500/20 bg-blue-950/5 text-blue-400',
-      'General Crime': 'border-slate-500/20 bg-slate-900/60 text-slate-300'
+      Violence: {
+        card: 'border-amber-500/25 bg-amber-950/10 text-amber-300',
+        bar: 'from-amber-500 to-yellow-300',
+        risk: 'High'
+      },
+      'General Crime': {
+        card: 'border-slate-500/25 bg-slate-900/75 text-slate-200',
+        bar: 'from-slate-500 to-slate-300',
+        risk: 'Watch'
+      },
+      Extremism: {
+        card: 'border-red-500/25 bg-red-950/10 text-red-300',
+        bar: 'from-red-500 to-rose-300',
+        risk: 'Critical'
+      }
     };
+    const counts = new Map(categoryChartData.map((item) => [item.name, item.count]));
 
-    return categoryChartData
-      .filter((item) => item.count > 0)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 3)
+    return ['Violence', 'General Crime', 'Extremism']
+      .map((name) => ({
+        name,
+        count: counts.get(name) || 0,
+        ...palette[name]
+      }))
       .map((item) => ({
         ...item,
-        percentage: Math.round((item.count / total) * 100),
-        color: palette[item.name] || palette['General Crime']
+        percentage: Math.round((item.count / total) * 100)
       }));
   }, [categoryChartData]);
 
@@ -804,16 +960,20 @@ const Dashboard = () => {
   const aiInsights = useMemo(() => {
     const topCategory = [...categoryChartData].sort((a, b) => b.count - a.count)[0];
     const topKeyword = dangerousKeywords[0];
+    const predictionLabel = topCategory?.count === 1 ? 'prediction' : 'predictions';
+    const keywordLabel = topKeyword?.count === 1 ? 'mar' : 'jeer';
+    const caseLabel = telemetry.activeThreats === 1 ? 'kiis' : 'kiis';
+
     return {
       patterns: topCategory?.count
-        ? `${topCategory.name} is the leading detected category across ${topCategory.count} stored prediction${topCategory.count === 1 ? '' : 's'}.`
-        : 'No crime-category cluster has been detected in the current prediction store.',
+        ? `${topCategory.name} ayaa ah nooca ugu badan ee la arkay, wuxuuna ku jiraa ${topCategory.count} ${predictionLabel} oo kaydsan.`
+        : 'Weli lama helin category dambiyeed oo ku filan xogta hadda kaydsan.',
       escalation: topKeyword
-        ? `NLP keyword "${topKeyword.word}" appears in ${topKeyword.count} live detection${topKeyword.count === 1 ? '' : 's'}.`
-        : 'No emergency keywords are present in the current suspicious post collection.',
+        ? `Erayga halista ah "${topKeyword.word}" waxaa lagu arkay ${topKeyword.count} ${keywordLabel} detections-ka hadda jira.`
+        : 'Weli lama helin erayo degdeg ah oo ka muuqda detections-ka hadda jira.',
       recommendation: telemetry.activeThreats > 0
-        ? `${telemetry.activeThreats} active threat case${telemetry.activeThreats === 1 ? '' : 's'} should remain in review until investigator status is updated.`
-      : 'No active threat case is waiting for investigator action.'
+        ? `${telemetry.activeThreats} ${caseLabel} oo active ah ha sii ahaadaan review ilaa investigator-ku status-kooda ka beddelayo.`
+      : 'Hadda ma jiro kiis active ah oo sugaya tallaabo investigator.'
     };
   }, [categoryChartData, dangerousKeywords, telemetry.activeThreats]);
 
@@ -879,17 +1039,59 @@ const Dashboard = () => {
     ]));
   }, [platformRatios, normalizedSearchQuery]);
 
+  const incidentAlerts = useMemo(() => {
+    const fromReports = crimeReports
+      .filter((report) => report.emergencyAlert?.detected || normalizeScore(report.confidence) >= 60)
+      .map((report) => ({
+        _id: `report-${report._id}`,
+        title: report.emergencyAlert?.detected ? 'Emergency case' : 'High-risk case',
+        message: compactAlertText(report.inputText),
+        type: 'crime_report',
+        severity: report.emergencyAlert?.detected || normalizeScore(report.confidence) >= 85 ? 'critical' : 'danger',
+        createdAt: report.createdAt,
+        inputText: report.inputText,
+        emergencyAlert: report.emergencyAlert,
+        payload: {
+          reportId: report._id,
+          predictionId: report.predictionId,
+          confidence: report.confidence,
+          inputText: compactAlertText(report.inputText),
+          categories: report.emergencyAlert?.categories?.map((category) => category.label) || [],
+          matchedKeywords: report.emergencyAlert?.matchedKeywords || [],
+          user: report.user
+        }
+      }));
+
+    const merged = [...liveAlerts, ...fromReports];
+    const seen = new Set();
+
+    return merged
+      .filter((alert) => {
+        const key = alert.payload?.reportId || alert.payload?.predictionId || alert._id;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      .slice(0, 50);
+  }, [crimeReports, liveAlerts]);
+
   const filteredLiveAlerts = useMemo(() => {
-    if (!normalizedSearchQuery) return liveAlerts;
-    return liveAlerts.filter((alert) => matchesSearch(normalizedSearchQuery, [
+    if (!normalizedSearchQuery) return incidentAlerts;
+    return incidentAlerts.filter((alert) => matchesSearch(normalizedSearchQuery, [
       alert._id,
       alert.title,
       alert.message,
       alert.type,
       alert.severity,
-      alert.payload?.caseId
+      alert.payload?.caseId,
+      alert.payload?.reportId,
+      alert.payload?.predictionId,
+      alert.payload?.inputText,
+      getAlertCategories(alert),
+      getAlertKeywords(alert)
     ]));
-  }, [liveAlerts, normalizedSearchQuery]);
+  }, [incidentAlerts, normalizedSearchQuery]);
 
   const searchResults = useMemo(() => {
     if (!normalizedSearchQuery) return [];
@@ -970,18 +1172,6 @@ const Dashboard = () => {
     : 0;
   const dashboardAlerts = normalizedSearchQuery ? filteredLiveAlerts : liveAlerts;
   const dashboardCaseFeed = normalizedSearchQuery ? filteredInvestigations : crimeReports;
-
-  const diagnostics = stats?.system || {};
-  const alertPipelineStatus = channelStatus({
-    enabled: diagnostics.emergency_alerts?.pipeline?.enabled,
-    configured: diagnostics.emergency_alerts?.pipeline?.enabled
-  });
-  const smsDispatchStatus = channelStatus(diagnostics.emergency_alerts?.sms);
-  const emailDispatchStatus = channelStatus(diagnostics.emergency_alerts?.email);
-  const socketGatewayStatus = channelStatus({
-    enabled: true,
-    configured: diagnostics.notifications?.socket_ready ?? socketConnected
-  });
 
   if (loading) {
     return (
@@ -1170,13 +1360,6 @@ const Dashboard = () => {
                     </div>
                     <div className="mt-1 space-y-0.5">
                       <button
-                        onClick={() => { setActiveTab('settings'); setProfileDropdownOpen(false); }}
-                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-slate-400 transition-colors hover:bg-cyan-500/5 hover:text-white"
-                      >
-                        <SettingsIcon className="h-3.5 w-3.5" />
-                        System Settings
-                      </button>
-                      <button
                         onClick={handleLogout}
                         className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-rose-400 transition-colors hover:bg-rose-500/10"
                       >
@@ -1209,8 +1392,7 @@ const Dashboard = () => {
               { id: 'users', label: 'Users Monitoring', icon: Users, badge: telemetry.highRiskUsers },
               { id: 'evidence', label: 'Evidence Center', icon: HardDrive, badge: null },
               { id: 'reports', label: 'Reports Export', icon: FileText, badge: null },
-              { id: 'alerts', label: 'Alerts Dashboard', icon: Siren, badge: liveAlerts.length > 0 ? 'ALERT' : null },
-              { id: 'settings', label: 'Settings Diagnostics', icon: SettingsIcon, badge: null }
+              { id: 'alerts', label: 'Alerts Dashboard', icon: Siren, badge: liveAlerts.length > 0 ? 'ALERT' : null }
             ].map((item) => {
               const IconComponent = item.icon;
               const isSelected = activeTab === item.id;
@@ -1391,26 +1573,31 @@ const Dashboard = () => {
                       <div className="absolute top-0 left-0 w-[2px] h-full bg-cyan-400" />
                       <div className="flex items-center gap-2 border-b border-cyan-500/10 pb-4 mb-4">
                         <Sparkles className="h-5 w-5 text-cyan-400" />
-                        <h2 className="font-mono text-sm font-bold tracking-wider text-slate-200 uppercase">AI REASONING CORE</h2>
+                        <div>
+                          <h2 className="font-mono text-sm font-bold tracking-wider text-slate-200 uppercase">AI REASONING CORE</h2>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Live data update: {lastTelemetryUpdate ? lastTelemetryUpdate.toLocaleTimeString() : 'loading...'}
+                          </p>
+                        </div>
                       </div>
 
                       <div className="space-y-4 text-left font-mono text-xs">
                         <div className="rounded-lg bg-cyan-500/5 p-3.5 border border-cyan-500/10">
-                          <h4 className="text-cyan-400 font-bold mb-1">Pattern Detections</h4>
+                          <h4 className="text-cyan-400 font-bold mb-1">Nooca ugu badan</h4>
                           <p className="text-slate-400 leading-relaxed text-[11px]">
                             {aiInsights.patterns}
                           </p>
                         </div>
 
                         <div className="rounded-lg bg-amber-500/5 p-3.5 border border-amber-500/10">
-                          <h4 className="text-amber-400 font-bold mb-1">Escalation Predictions</h4>
+                          <h4 className="text-amber-400 font-bold mb-1">Erayada halista ah</h4>
                           <p className="text-slate-400 leading-relaxed text-[11px]">
                             {aiInsights.escalation}
                           </p>
                         </div>
 
                         <div className="rounded-lg bg-rose-500/5 p-3.5 border border-rose-500/10">
-                          <h4 className="text-rose-400 font-bold mb-1">Response Recommendation</h4>
+                          <h4 className="text-rose-400 font-bold mb-1">Talo baaritaan</h4>
                           <p className="text-slate-400 leading-relaxed text-[11px]">
                             {aiInsights.recommendation}
                           </p>
@@ -1952,42 +2139,37 @@ const Dashboard = () => {
                                 </td>
                                 <td className="py-3.5 text-slate-400 font-semibold">{post.category}</td>
                                 <td className="py-3.5 text-slate-500 text-[11px]">{new Date(post.createdAt).toLocaleDateString()}</td>
-                                <td className="py-3.5 text-right space-x-1">
+                                <td className="py-3.5">
+                                  <div className="flex justify-end gap-1.5">
                                   <button
-                                    onClick={() => {
-                                      const matchingReport = findReportForPrediction(post);
-                                      if (matchingReport) {
-                                        setSelectedCaseId(matchingReport._id);
-                                        setActiveTab('investigations');
-                                      } else {
-                                        alert('No active crime report case dossier exists for this post yet.');
-                                      }
-                                    }}
-                                    className="rounded bg-cyan-950 px-2.5 py-1 text-[10px] text-cyan-300 border border-cyan-800/40 hover:bg-cyan-900 transition-colors"
+                                    onClick={() => handleInvestigatePost(post)}
+                                    className="inline-flex h-8 items-center justify-center rounded bg-cyan-950 px-3 text-[10px] font-bold text-cyan-300 border border-cyan-800/40 hover:bg-cyan-900 transition-colors"
+                                    title="Open investigation case"
                                   >
                                     Investigate
                                   </button>
                                   <button
                                     onClick={() => handleFlagPost(post)}
-                                    className="rounded bg-amber-950 px-2 py-1 text-[10px] text-amber-300 border border-amber-800/30 hover:bg-amber-900 transition-colors"
-                                    title="Flag Content"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded bg-amber-950 text-amber-300 border border-amber-800/30 hover:bg-amber-900 transition-colors"
+                                    title="Mark as reviewing"
                                   >
-                                    <Flag className="h-3 w-3" />
+                                    <Flag className="h-4 w-4" />
                                   </button>
                                   <button
                                     onClick={() => handleRemovePost(post)}
-                                    className="rounded bg-rose-950 px-2 py-1 text-[10px] text-rose-300 border border-rose-800/30 hover:bg-rose-900 transition-colors"
-                                    title="Purge Incident"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded bg-rose-950 text-rose-300 border border-rose-800/30 hover:bg-rose-900 transition-colors"
+                                    title="Delete linked report"
                                   >
-                                    <Trash2 className="h-3 w-3" />
+                                    <Trash2 className="h-4 w-4" />
                                   </button>
                                   <button
                                     onClick={() => handleViewPostDetails(post)}
-                                    className="rounded bg-slate-900 px-2 py-1 text-[10px] text-slate-300 border border-slate-700 hover:bg-slate-800 transition-colors"
-                                    title="View Details"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded bg-slate-800 text-slate-200 border border-slate-600 hover:bg-slate-700 hover:text-white transition-colors"
+                                    title="View post details"
                                   >
-                                    <Eye className="h-3 w-3" />
+                                    <Eye className="h-4 w-4" />
                                   </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -2014,40 +2196,55 @@ const Dashboard = () => {
                   className="space-y-6 text-left font-mono"
                 >
                   <div className="rounded-xl border border-cyan-500/10 bg-[#090f1d]/75 p-5 backdrop-blur-md">
-                    <h2 className="text-sm font-bold tracking-wider text-slate-200 uppercase mb-4">CRIME CATEGORY TELEMETRY</h2>
+                    <div className="mb-5 flex flex-col gap-2 border-b border-cyan-500/10 pb-4 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <h2 className="text-sm font-bold tracking-wider text-slate-200 uppercase">CRIME CATEGORY TELEMETRY</h2>
+                        <p className="mt-1 text-[10px] text-slate-500">Live category distribution with visible counts and percentages.</p>
+                      </div>
+                      <div className="rounded border border-cyan-500/15 bg-cyan-950/20 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-300">
+                        {filteredCategoryMonitorCards.reduce((sum, item) => sum + item.count, 0)} detections
+                      </div>
+                    </div>
 
-                    {/* SVG bar chart showing crime categories */}
-                    <div className="h-60 w-full flex items-end justify-between px-6 pt-6 border-b border-cyan-500/10">
-                      {filteredCategoryChartData.length > 0 ? filteredCategoryChartData.map((data, idx) => {
-                        const maxCount = Math.max(...filteredCategoryChartData.map((d) => d.count)) || 1;
-                        const pct = Math.round((data.count / maxCount) * 80) + 10; // min height 10%
-                        return (
-                          <div key={idx} className="flex flex-col items-center w-1/8 group">
-                            <span className="text-[10px] font-bold text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity mb-2">
-                              {data.count}
-                            </span>
-                            <div
-                              className="w-8 rounded-t bg-gradient-to-t from-cyan-600 to-cyan-300 shadow-[0_0_15px_rgba(34,211,238,0.2)] hover:from-cyan-400 hover:to-white transition-all duration-300"
-                              style={{ height: `${pct}%` }}
-                            />
-                            <span className="text-[9px] text-slate-500 mt-2 truncate w-full text-center">
-                              {data.name}
-                            </span>
-                          </div>
-                        );
-                      }) : (
-                        <div className="flex h-full w-full items-center justify-center text-center text-xs text-slate-500">
+                    <div className="h-72 border-b border-cyan-500/10 px-4 pb-4 pt-6">
+                      {filteredCategoryMonitorCards.length > 0 ? (
+                        <div className="flex h-full items-end justify-around gap-6">
+                          {filteredCategoryMonitorCards.map((data) => {
+                            const maxCount = Math.max(1, ...filteredCategoryMonitorCards.map((item) => item.count));
+                            const height = data.count ? Math.max(18, Math.round((data.count / maxCount) * 190)) : 8;
+
+                            return (
+                              <div key={data.name} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end">
+                                <div className="mb-3 text-center">
+                                  <div className="text-lg font-black text-white">{data.count}</div>
+                                  <div className="mt-1 text-[10px] font-bold text-cyan-300">{data.percentage}%</div>
+                                </div>
+                                <motion.div
+                                  initial={{ height: 0 }}
+                                  animate={{ height }}
+                                  transition={{ duration: 0.7, ease: 'easeOut' }}
+                                  className={`w-14 rounded-t-lg bg-gradient-to-t ${data.bar} shadow-[0_0_18px_rgba(34,211,238,0.18)] sm:w-20`}
+                                />
+                                <div className="mt-3 w-full truncate text-center text-[11px] font-semibold text-slate-400">
+                                  {data.name}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-cyan-500/10 bg-[#070b13] p-8 text-center text-xs text-slate-500">
                           {normalizedSearchQuery ? 'Waxaas ma jiraan. No matching crime category found.' : 'No crime category data is available yet.'}
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     {filteredCategoryMonitorCards.length > 0 ? filteredCategoryMonitorCards.map((card) => (
-                      <div key={card.name} className={`rounded-lg border p-4.5 ${card.color}`}>
+                      <div key={card.name} className={`rounded-lg border p-4 ${card.card}`}>
                         <h4 className="font-bold text-xs uppercase mb-1.5">{card.name} MONITOR</h4>
-                        <p className="text-[10px] text-slate-400 leading-relaxed">
+                        <p className="text-[10px] text-slate-300 leading-relaxed">
                           {card.count} stored detection{card.count === 1 ? '' : 's'} currently represent {card.percentage}% of the live category dataset.
                         </p>
                       </div>
@@ -2191,6 +2388,21 @@ const Dashboard = () => {
                   <h2 className="text-sm font-bold tracking-wider text-slate-200 uppercase mb-2">INTELLIGENCE REPORT GENERATOR</h2>
                   <p className="text-[10px] text-slate-500 mb-6">Compile and export active threat databases into standard file arrays for distribution.</p>
 
+                  <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded-lg border border-cyan-500/10 bg-[#070b13] p-4">
+                      <div className="text-2xl font-black text-white">{crimeReports.length}</div>
+                      <div className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Reports ready</div>
+                    </div>
+                    <div className="rounded-lg border border-amber-500/15 bg-amber-950/10 p-4">
+                      <div className="text-2xl font-black text-amber-300">{telemetry.activeThreats}</div>
+                      <div className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Active cases</div>
+                    </div>
+                    <div className="rounded-lg border border-red-500/15 bg-red-950/10 p-4">
+                      <div className="text-2xl font-black text-red-300">{threatConcentration.critical}</div>
+                      <div className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Critical cases</div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     
                     <div className="rounded-lg border border-cyan-500/10 bg-[#070b13] p-5 flex flex-col justify-between">
@@ -2203,9 +2415,10 @@ const Dashboard = () => {
                       </div>
                       <button
                         onClick={() => handleExport('csv')}
-                        className="mt-6 rounded bg-cyan-500/10 border border-cyan-500/20 py-2.5 text-center text-xs text-cyan-400 hover:bg-cyan-500/20 flex items-center justify-center gap-1.5"
+                        disabled={Boolean(exportingFormat) || crimeReports.length === 0}
+                        className="mt-6 rounded bg-cyan-500/10 border border-cyan-500/20 py-2.5 text-center text-xs text-cyan-400 hover:bg-cyan-500/20 flex items-center justify-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Download className="h-4 w-4" /> Export CSV Array
+                        <Download className="h-4 w-4" /> {exportingFormat === 'csv' ? 'Preparing CSV...' : 'Download CSV Report'}
                       </button>
                     </div>
 
@@ -2219,9 +2432,10 @@ const Dashboard = () => {
                       </div>
                       <button
                         onClick={() => handleExport('json')}
-                        className="mt-6 rounded bg-cyan-500/10 border border-cyan-500/20 py-2.5 text-center text-xs text-cyan-400 hover:bg-cyan-500/20 flex items-center justify-center gap-1.5"
+                        disabled={Boolean(exportingFormat) || crimeReports.length === 0}
+                        className="mt-6 rounded bg-cyan-500/10 border border-cyan-500/20 py-2.5 text-center text-xs text-cyan-400 hover:bg-cyan-500/20 flex items-center justify-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Download className="h-4 w-4" /> Export JSON Document
+                        <Download className="h-4 w-4" /> {exportingFormat === 'json' ? 'Preparing JSON...' : 'Download JSON Report'}
                       </button>
                     </div>
 
@@ -2277,17 +2491,53 @@ const Dashboard = () => {
                   {/* Alert history */}
                   <div className="space-y-3">
                     <h4 className="text-xs text-slate-400 uppercase tracking-wider">RECENT INCIDENTS FILED</h4>
-                    <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
                       {filteredLiveAlerts.length > 0 ? (
-                        filteredLiveAlerts.map((a) => (
-                          <div key={a._id} className="rounded bg-black/40 border border-red-500/15 p-3 flex justify-between items-center text-xs">
-                            <div>
-                              <span className="text-red-400 font-bold uppercase">{a.severity} alert</span>
-                              <p className="text-slate-300 font-medium mt-0.5">{a.title}</p>
+                        filteredLiveAlerts.map((a) => {
+                          const classes = getAlertCardClasses(a.severity);
+                          const categories = getAlertCategories(a);
+                          const keywords = getAlertKeywords(a);
+                          const snippet = getAlertSnippet(a);
+
+                          return (
+                            <div key={a._id} className={`relative overflow-hidden rounded border p-4 text-xs ${classes.shell}`}>
+                              <div className={`absolute left-0 top-0 h-full w-1 ${classes.stripe}`} />
+                              <div className="flex flex-col gap-3 pl-2 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="min-w-0 flex-1">
+                                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                                    <span className={`rounded border px-2 py-1 font-bold uppercase ${classes.badge}`}>
+                                      {a.severity} alert
+                                    </span>
+                                    <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                                      {a.type?.replace(/_/g, ' ') || 'incident'}
+                                    </span>
+                                  </div>
+                                  <p className="font-bold text-slate-100">
+                                    {categories || a.title || 'Emergency incident'}
+                                  </p>
+                                  {keywords && (
+                                    <p className="mt-1 text-[11px] text-red-300">
+                                      Keywords: {keywords}
+                                    </p>
+                                  )}
+                                  <p className="mt-2 leading-relaxed text-slate-300">
+                                    {snippet}
+                                  </p>
+                                  <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-slate-500">
+                                    {a.payload?.confidence !== undefined && (
+                                      <span>Confidence: {formatPercent(a.payload.confidence)}</span>
+                                    )}
+                                    {a.payload?.reportId && <span>Report: {a.payload.reportId}</span>}
+                                    {a.payload?.user?.name && <span>User: {a.payload.user.name}</span>}
+                                  </div>
+                                </div>
+                                <span className="shrink-0 text-slate-500">
+                                  {new Date(a.createdAt).toLocaleTimeString()}
+                                </span>
+                              </div>
                             </div>
-                            <span className="text-slate-500">{new Date(a.createdAt).toLocaleTimeString()}</span>
-                          </div>
-                        ))
+                          );
+                        })
                       ) : (
                         <div className="text-slate-500 text-xs">
                           {normalizedSearchQuery ? 'Waxaas ma jiraan. No matching incident alert found.' : 'No critical incident alerts recorded in current session.'}
@@ -2298,73 +2548,6 @@ const Dashboard = () => {
                 </motion.div>
               )}
 
-              {activeTab === 'settings' && (
-                <motion.div
-                  key="settings"
-                  initial={{ opacity: 0, y: 15 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -15 }}
-                  className="rounded-xl border border-cyan-500/10 bg-[#090f1d]/75 p-5 backdrop-blur-md text-left font-mono text-xs"
-                >
-                  <h2 className="text-sm font-bold tracking-wider text-slate-200 uppercase mb-4">SYSTEM DIAGNOSTICS CONTROL</h2>
-
-                  <div className="space-y-4 max-w-xl">
-                    <div className="rounded-lg bg-black/40 border border-cyan-500/5 p-4">
-                      <h3 className="text-cyan-400 font-bold mb-2 uppercase">Core API Configurations</h3>
-                      <div className="space-y-2 text-slate-400">
-                        <div className="flex justify-between border-b border-cyan-500/5 pb-1.5">
-                          <span>Backend Host Address:</span>
-                          <span className="text-slate-300 select-all">{API_URL}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-cyan-500/5 pb-1.5">
-                          <span>Model API Address:</span>
-                          <span className="text-slate-300 select-all">{modelInfo?.python_api || 'http://localhost:5000'}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-cyan-500/5 pb-1.5">
-                          <span>Socket Gateway Address:</span>
-                          <span className="text-slate-300 select-all">{SOCKET_URL}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-cyan-500/5 pb-1.5">
-                          <span>Database Adapter:</span>
-                          <span className="text-slate-300 select-all">
-                            {diagnostics.database?.connected ? 'MongoDB connected' : diagnostics.database?.fallback_storage ? 'Local JSON fallback' : 'Unknown'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg bg-black/40 border border-cyan-500/5 p-4">
-                      <h3 className="text-cyan-400 font-bold mb-2 uppercase">Diagnostic Status</h3>
-                      <div className="space-y-2 text-slate-400">
-                        <div className="flex justify-between items-center border-b border-cyan-500/5 pb-1.5">
-                          <span>Emergency Alerts Pipeline:</span>
-                          <span className={`rounded border px-2 py-0.5 font-bold text-[10px] uppercase ${alertPipelineStatus.className}`}>
-                            {alertPipelineStatus.label}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center border-b border-cyan-500/5 pb-1.5">
-                          <span>Socket Notifications:</span>
-                          <span className={`rounded border px-2 py-0.5 font-bold text-[10px] uppercase ${socketGatewayStatus.className}`}>
-                            {socketGatewayStatus.label}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center border-b border-cyan-500/5 pb-1.5">
-                          <span>Twilio SMS Dispatch:</span>
-                          <span className={`rounded border px-2 py-0.5 font-bold text-[10px] uppercase ${smsDispatchStatus.className}`}>
-                            {smsDispatchStatus.label}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center border-b border-cyan-500/5 pb-1.5">
-                          <span>SMTP Email Dispatch:</span>
-                          <span className={`rounded border px-2 py-0.5 font-bold text-[10px] uppercase ${emailDispatchStatus.className}`}>
-                            {emailDispatchStatus.label}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
             </AnimatePresence>
           </div>
         </main>

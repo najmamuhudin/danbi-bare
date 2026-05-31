@@ -11,6 +11,14 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  if (config.data instanceof FormData) {
+    if (typeof config.headers.delete === 'function') {
+      config.headers.delete('Content-Type');
+    } else {
+      delete config.headers['Content-Type'];
+    }
+  }
+
   const storedAuth = localStorage.getItem('crimewatch_auth');
   if (storedAuth) {
     try {
@@ -50,6 +58,11 @@ export const getCurrentUser = async () => {
   return response.data;
 };
 
+export const changePassword = async (payload) => {
+  const response = await api.patch('/auth/me/password', payload);
+  return response.data;
+};
+
 export const getAuthRoles = async () => {
   const response = await api.get('/auth/roles');
   return response.data;
@@ -79,11 +92,7 @@ export const analyzeFile = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
   
-  const response = await api.post('/analyze/file', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  const response = await api.post('/analyze/file', formData);
   return response.data;
 };
 

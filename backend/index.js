@@ -17,6 +17,7 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 4000);
 const HOST = process.env.HOST || '0.0.0.0';
 const PYTHON_API = process.env.PYTHON_API_URL || 'http://localhost:5000';
+const REQUEST_BODY_LIMIT = process.env.REQUEST_BODY_LIMIT || '100mb';
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error(`Invalid PORT value "${process.env.PORT}". Use a number between 1 and 65535.`);
@@ -27,8 +28,8 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 app.use(helmet());
 app.use(cors());
 app.use(morgan('dev'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
 // Routes
 app.use('/api/auth', authRoutes);
